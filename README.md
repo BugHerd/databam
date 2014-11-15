@@ -1,7 +1,7 @@
 DataBAM
 =======
 
-**D**ata**B**ase **A**ccess **M**echanism
+_D_ata_B_ase _A_ccess _M_echanism
 
 Documentation is [here](http://godoc.org/github.com/BugHerd/databam) for now.
 
