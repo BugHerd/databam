@@ -1,7 +1,7 @@
 DataBAM
 =======
 
-*D*ata*B*ase *A*ccess *M*echanism
+DataBase Access Mechanism
 
 Documentation is [here](http://godoc.org/github.com/BugHerd/databam) for now.
 
