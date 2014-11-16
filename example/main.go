@@ -41,7 +41,7 @@ func main() {
 	}
 
 	var t []Tenant
-	if err := tenants.Find(&t, &where); err != nil {
+	if err := tenants.Fetch(&t, &where); err != nil {
 		panic(err)
 	}
 

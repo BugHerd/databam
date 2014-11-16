@@ -41,7 +41,7 @@ func (d *Databam) MustRepository(i interface{}) *Repository {
 	}
 }
 
-func (d *Databam) Load(out interface{}) error {
+func (d *Databam) Fetch(out interface{}) error {
 	if m, err := d.Repository(out); err != nil {
 		return err
 	} else {

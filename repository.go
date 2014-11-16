@@ -1,9 +1,7 @@
 package databam
 
 import (
-	"fmt"
 	"reflect"
-	"strconv"
 
 	"github.com/lann/squirrel"
 	"github.com/serenize/snaker"
@@ -14,10 +12,6 @@ type Repository struct {
 	t reflect.Type
 
 	table string
-	alias string
-
-	joinc int
-	joins map[*Repository]string
 }
 
 func NewRepository(d *Databam, i interface{}) (*Repository, error) {
@@ -55,19 +49,21 @@ func NewRepository(d *Databam, i interface{}) (*Repository, error) {
 		d: d,
 		t: t,
 
-		alias: "t0",
 		table: table,
-		joins: map[*Repository]string{},
 	}
 
 	return &r, nil
 }
 
-func (r Repository) Load(out interface{}) error {
-	return r.Find(out, out)
+func (r *Repository) Select() selectQuery {
+	return newSelectQuery(r)
 }
 
-func (r Repository) Find(out interface{}, where interface{}) error {
+func (r Repository) Load(out interface{}) error {
+	return r.Fetch(out, out)
+}
+
+func (r Repository) Fetch(out interface{}, where interface{}) error {
 	t := reflect.TypeOf(out)
 
 	if t.Kind() != reflect.Ptr {
@@ -97,10 +93,10 @@ func (r Repository) Find(out interface{}, where interface{}) error {
 		return ErrNotMappable
 	}
 
-	q := squirrel.Select(r.alias + ".*").From(r.table + " " + r.alias)
+	q := r.Select()
 
 	if count != 0 {
-		q = q.Limit(uint64(count))
+		q = q.Limit(count)
 	} else if single {
 		q = q.Limit(1)
 	}
@@ -116,7 +112,7 @@ func (r Repository) Find(out interface{}, where interface{}) error {
 			return ErrIncompatibleType
 		}
 
-		joins, wheres, err := r.addFieldsToQuery(&r, where)
+		joins, wheres, err := r.addToQuery(&r, where)
 		if err != nil {
 			return err
 		}
@@ -129,7 +125,7 @@ func (r Repository) Find(out interface{}, where interface{}) error {
 		}
 	}
 
-	query, parameters, err := q.ToSql()
+	query, parameters, err := q.Compile()
 	if err != nil {
 		return err
 	}
@@ -148,16 +144,10 @@ func (r Repository) Find(out interface{}, where interface{}) error {
 	return r.d.mapper.RowsTo(rows, out)
 }
 
-func (r *Repository) nextAlias() string {
-	r.joinc++
-
-	return "t" + strconv.Itoa(r.joinc)
-}
-
-func (r *Repository) addFieldsToQuery(source *Repository, where interface{}) ([]string, []squirrel.Eq, error) {
+func (r *Repository) addToQuery(source *Repository, where interface{}) ([]queryJoin, []squirrel.Eq, error) {
 	v := reflect.ValueOf(where)
 
-	joins := []string{}
+	joins := []queryJoin{}
 	wheres := []squirrel.Eq{}
 
 	if v.Kind() == reflect.Ptr {
@@ -174,7 +164,7 @@ func (r *Repository) addFieldsToQuery(source *Repository, where interface{}) ([]
 			}
 
 			if f.Kind() == reflect.Int || f.Kind() == reflect.String {
-				w[r.fieldToColumn(source, source.t.Field(i).Name)] = f.Interface()
+				// w[r.fieldToColumn(source, source.t.Field(i).Name)] = f.Interface()
 			}
 		}
 	}
@@ -200,15 +190,9 @@ func (r *Repository) addFieldsToQuery(source *Repository, where interface{}) ([]
 
 					join := r.join(source, source.t.Field(i).Name)
 
-					joins = append(joins, fmt.Sprintf(
-						"%s %s ON %s = %s",
-						join.repository.table,
-						r.joins[join.repository],
-						r.fieldToColumn(join.repository, join.rfield),
-						r.fieldToColumn(source, join.sfield),
-					))
+					joins = append(joins, *join)
 
-					if j, w, err := r.addFieldsToQuery(join.repository, f.Interface()); err != nil {
+					if j, w, err := r.addToQuery(join.remote.model, f.Interface()); err != nil {
 						return nil, nil, err
 					} else {
 						joins = append(joins, j...)
@@ -220,15 +204,9 @@ func (r *Repository) addFieldsToQuery(source *Repository, where interface{}) ([]
 			if f.Kind() == reflect.Struct {
 				join := r.join(source, source.t.Field(i).Name)
 
-				joins = append(joins, fmt.Sprintf(
-					"%s %s ON %s = %s",
-					join.repository.table,
-					r.joins[join.repository],
-					r.fieldToColumn(join.repository, join.rfield),
-					r.fieldToColumn(source, join.sfield),
-				))
+				joins = append(joins, *join)
 
-				if j, w, err := r.addFieldsToQuery(join.repository, f.Interface()); err != nil {
+				if j, w, err := r.addToQuery(join.remote.model, f.Interface()); err != nil {
 					return nil, nil, err
 				} else {
 					joins = append(joins, j...)
@@ -241,17 +219,7 @@ func (r *Repository) addFieldsToQuery(source *Repository, where interface{}) ([]
 	return joins, wheres, nil
 }
 
-func (r *Repository) fieldToColumn(repository *Repository, field string) string {
-	return fmt.Sprintf("%s.%s", repository.alias, r.d.mapper.FieldToColumn(field))
-}
-
-type joinInfo struct {
-	repository *Repository
-	sfield     string
-	rfield     string
-}
-
-func (r *Repository) join(source *Repository, name string) *joinInfo {
+func (r *Repository) join(source *Repository, name string) *queryJoin {
 	f, ok := source.t.FieldByName(name)
 	if !ok {
 		return nil
@@ -278,9 +246,6 @@ func (r *Repository) join(source *Repository, name string) *joinInfo {
 	v := reflect.Indirect(reflect.New(t))
 
 	other := r.d.MustRepository(v.Interface())
-	other.alias = r.nextAlias()
-
-	r.joins[other] = other.alias
 
 	remoteField := ""
 	sourceField := ""
@@ -303,9 +268,14 @@ func (r *Repository) join(source *Repository, name string) *joinInfo {
 		}
 	}
 
-	return &joinInfo{
-		repository: other,
-		sfield:     sourceField,
-		rfield:     remoteField,
+	return &queryJoin{
+		source: queryField{
+			model: source,
+			field: sourceField,
+		},
+		remote: queryField{
+			model: other,
+			field: remoteField,
+		},
 	}
 }
